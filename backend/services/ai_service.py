@@ -81,6 +81,27 @@ class LLMUnavailable(RuntimeError):
     """Raised when no LLM is configured or the provider call fails."""
 
 
+def _not_configured_reason() -> str:
+    """Explain where to set the key, for wherever this is actually running.
+
+    Telling someone to edit ``.env`` is useless on a deployed server: there is no
+    ``.env`` in the image, because it is gitignored precisely so keys never ship.
+    """
+    settings = get_settings()
+    if settings.app_env.lower() in ("production", "prod"):
+        where = (
+            "Set LLM_API_KEY in this host's environment variables (on Render: the "
+            "service's Environment tab). A local .env file is not deployed -- it is "
+            "gitignored so that keys never reach the image."
+        )
+    else:
+        where = "Set LLM_PROVIDER and LLM_API_KEY in .env."
+    return (
+        f"No LLM is configured. {where} Deterministic explanations, recommendations "
+        "and daily insights remain available without it."
+    )
+
+
 def status() -> dict:
     settings = get_settings()
     return {
@@ -90,11 +111,7 @@ def status() -> dict:
         "reason": (
             None
             if settings.llm_configured
-            else (
-                "No LLM is configured. Set LLM_PROVIDER and LLM_API_KEY in .env to "
-                "enable conversational answers. Deterministic explanations, "
-                "recommendations and daily insights remain available without it."
-            )
+            else _not_configured_reason()
         ),
         "suggested_prompts": SUGGESTED_PROMPTS,
     }
