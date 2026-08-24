@@ -13,3 +13,4 @@ frontend/shoot*.mjs
 .pytest_cache/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+frontend/verify/

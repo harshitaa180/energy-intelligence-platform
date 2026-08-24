@@ -1,0 +1,14 @@
+# Railway build and deploy configuration.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway waits for this to return 2xx before routing traffic to a new deploy, so a
+# broken release never replaces a working one.
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+numReplicas = 1

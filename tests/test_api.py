@@ -407,3 +407,36 @@ def test_tariff_is_labelled_as_configuration(client: TestClient):
     assert body["provenance"] == "estimated"
     assert "not measured" in body["note"]
     assert len(body["schedule"]) == 24
+
+
+# --- static frontend -------------------------------------------------------
+#
+# In production one process serves both the API and the built React app. These
+# guard the boundary between them. They pass whether or not frontend/dist exists,
+# because the invariant that matters -- the SPA must never swallow an API route --
+# holds either way.
+
+
+def test_unknown_api_path_returns_json_not_the_app_shell(client: TestClient):
+    response = client.get("/api/does-not-exist")
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+
+
+def test_api_docs_are_not_shadowed_by_the_catch_all(client: TestClient):
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_history_routes_serve_the_app_shell_when_built(client: TestClient):
+    """A cold load of a client-side route must return index.html, not a 404."""
+    from backend.main import FRONTEND_DIST
+
+    if not (FRONTEND_DIST / "index.html").is_file():
+        pytest.skip("frontend is not built; run `npm run build` in frontend/")
+
+    for path in ("/", "/appliances", "/appliances/ac", "/forecast"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith("text/html"), path
+        assert "<div id=\"root\">" in response.text, path
