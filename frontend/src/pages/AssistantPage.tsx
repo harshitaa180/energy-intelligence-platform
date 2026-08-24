@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bot, Info, Send, User } from 'lucide-react'
 
+import { AnswerText } from '../components/AnswerText'
 import {
   Callout,
   Card,
@@ -155,11 +156,11 @@ export function AssistantPage() {
                           : 'bg-ink-50 text-ink-700 ring-1 ring-inset ring-ink-200/70'
                       }`}
                     >
-                      {turn.content.split('\n').map((line, lineIndex) => (
-                        <p key={lineIndex} className={lineIndex ? 'mt-2' : ''}>
-                          {line}
-                        </p>
-                      ))}
+                      {turn.role === 'assistant' ? (
+                        <AnswerText text={turn.content} />
+                      ) : (
+                        turn.content
+                      )}
                     </div>
                     {turn.meta ? (
                       <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-ink-400">

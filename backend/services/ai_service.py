@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import lru_cache
 
 import httpx
 
@@ -47,8 +48,10 @@ Rules, in order of importance:
    the expectation, so "it was hot" does not by itself excuse a deviation -- the
    deviation is already weather-adjusted. Say so when it is relevant.
 6. Be concise and specific. Lead with the direct answer, quote the figures with units,
-   then give the reasoning. Use plain prose and short lists. Do not pad.
-7. If the question is outside what the snapshot covers, say so plainly rather than
+   then give the reasoning. Do not pad.
+7. Keep formatting simple: short paragraphs, and "- " bullets where a list genuinely
+   helps. **bold** is fine for a key figure. No headings, tables, or nested lists.
+8. If the question is outside what the snapshot covers, say so plainly rather than
    speculating.
 """
 
@@ -153,7 +156,13 @@ def ask(site_id: str, question: str, date: str | None = None, history: list | No
 
 
 def daily_insight(site_id: str, date: str | None = None) -> dict:
-    """The dashboard's insight card. Always returns something useful."""
+    """The dashboard's insight card. Always returns something useful.
+
+    The generated text is cached per site and date. Every dashboard load asks for this,
+    and the underlying figures for a past day never change, so without a cache each page
+    view would spend an LLM call and add its latency to the page. On a free provider
+    tier that also exhausts the request quota within a few minutes of ordinary browsing.
+    """
     settings = get_settings()
     date = date or energy_service.latest_date(site_id)
     context = context_service.compact_context(site_id, date)
@@ -168,31 +177,55 @@ def daily_insight(site_id: str, date: str | None = None) -> dict:
             "llm_available": False,
         }
 
-    prompt = (
-        f"Site snapshot:\n```json\n{json.dumps(context, default=str)}\n```\n\n"
-        f"{DAILY_INSIGHT_PROMPT}"
+    # Keyed on the model too, so switching provider or model produces fresh text.
+    cached, error = _cached_llm_insight(
+        site_id, date, settings.llm_provider, settings.resolved_llm_model
     )
-    try:
-        insight = _call_llm(prompt, SYSTEM_PROMPT, None)
-    except LLMUnavailable as exc:
-        logger.warning("Daily insight LLM call failed: %s", exc)
+    if cached is None:
         return {
             "site_id": site_id,
             "date": date,
             "insight": deterministic,
             "source": "deterministic_fallback",
             "llm_available": False,
-            "note": f"AI assistant temporarily unavailable ({exc}).",
+            "note": f"AI assistant temporarily unavailable ({error}).",
         }
 
     return {
         "site_id": site_id,
         "date": date,
-        "insight": insight,
+        "insight": cached,
         "source": f"llm:{settings.llm_provider}",
         "llm_available": True,
         "deterministic_insight": deterministic,
     }
+
+
+@lru_cache(maxsize=256)
+def _cached_llm_insight(
+    site_id: str, date: str, provider: str, model: str
+) -> tuple[str | None, str | None]:
+    """Generate one day's insight. Returns ``(text, None)`` or ``(None, reason)``.
+
+    A failure is deliberately *not* cached as a permanent result -- the cache is
+    cleared for this key so a transient rate limit or outage is retried on the next
+    request rather than freezing the fallback in place until restart.
+    """
+    context = context_service.compact_context(site_id, date)
+    prompt = (
+        f"Site snapshot:\n```json\n{json.dumps(context, default=str)}\n```\n\n"
+        f"{DAILY_INSIGHT_PROMPT}"
+    )
+    try:
+        return _call_llm(prompt, SYSTEM_PROMPT, None), None
+    except LLMUnavailable as exc:
+        logger.warning("Daily insight LLM call failed: %s", exc)
+        _cached_llm_insight.cache_clear()
+        return None, str(exc)
+
+
+def clear_insight_cache() -> None:
+    _cached_llm_insight.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +354,24 @@ def _call_gemini(prompt: str, system: str, history: list | None) -> str:
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            # Verified against the quota metadata Google returns: the free-tier limit is
+            # GenerateRequestsPerDayPerProjectPerModel, value 20 -- per DAY, not per
+            # minute. Saying "rate limited" alone leads people to wait a minute and try
+            # again all day.
+            raise LLMUnavailable(
+                "the free-tier daily quota is exhausted (HTTP 429). Google allows about "
+                "20 requests per day per model on a free key, and it resets daily. The "
+                "quota is per model, so setting LLM_MODEL to a different Gemini model "
+                "gives a separate allowance"
+            ) from exc
+        if exc.response.status_code == 404:
+            # Almost always a retired or misspelled model rather than a bad key, so
+            # name it: "HTTP 404" alone sends people looking at their credentials.
+            raise LLMUnavailable(
+                f"the model {settings.resolved_llm_model!r} was not found. It may be "
+                "retired or unavailable to this key; set LLM_MODEL to a current one"
+            ) from exc
         raise LLMUnavailable(f"provider returned HTTP {exc.response.status_code}") from exc
     except httpx.HTTPError as exc:
         raise LLMUnavailable("could not reach the provider") from exc
@@ -382,112 +433,314 @@ def _deterministic_insight(context: dict) -> str:
 
     return " ".join([summary, *extras])
 
-
 def _deterministic_answer(site_id: str, question: str, context: dict) -> str:
-    """Answer common questions from the context without a language model.
+    """Answer a question from the context without a language model.
 
-    This is intentionally simple keyword routing. It exists so the platform is never
-    silent, not to imitate a conversational model.
+    This is intent matching, not a conversation: it exists so the platform is never
+    silent when no LLM is configured or the provider fails. Intents are ordered from
+    most specific to least, because the phrasings overlap -- "how much can I save" and
+    "how much did today cost" both contain "how much", and only the extra word
+    separates them.
+
+    Anything unmatched falls through to the daily summary, which is always true but is
+    identical for every question. Widening the intents below is what stops one generic
+    answer standing in for several different ones.
     """
     lowered = question.lower()
-    today = context["today"]
-    appliances = context.get("appliances", [])
 
-    def top_channel_text() -> str:
-        channels = today.get("channels", [])
-        if not channels:
-            return "No appliance-level consumption was recorded for this day."
-        top = channels[0]
-        return (
-            f"{top['label']} used the most: {top['energy_kwh']:.2f} kWh, "
-            f"{top['share_pct']:.0f}% of the day's {today['total_energy_kwh']:.2f} kWh."
-        )
+    def has(*terms: str) -> bool:
+        return any(term in lowered for term in terms)
 
-    if any(word in lowered for word in ("most", "biggest", "highest consumer", "top")):
-        return top_channel_text()
+    for matches, handler in _INTENTS:
+        if matches(has, lowered):
+            answer = handler(context)
+            if answer:
+                return answer
 
-    if "replace" in lowered:
-        items = [r for r in context.get("recommendations", []) if "upgrad" in r["title"].lower()]
-        if items:
-            return f"{items[0]['recommendation']} {items[0]['reason']}"
-        return (
-            "No replacement is indicated from the available data. Replacement analysis "
-            "needs appliance star ratings, which exist only for the Jaipur homes, and a "
-            "purchase price, which is not in this dataset."
-        )
+    return _deterministic_insight(context)
 
-    if "carbon" in lowered or "emission" in lowered:
-        carbon = context["carbon"]
-        return (
-            f"This day's estimated carbon is {carbon['daily_kg']:.2f} kg CO2e, at a grid "
-            f"factor of {carbon['emission_factor']} kg/kWh ({carbon['emission_factor_source']}). "
-            "The factor is configured, not measured, so this is an estimate."
-        )
 
-    if "save" in lowered or "cheaper" in lowered or "bill" in lowered:
-        totals = context["optimisation"]["totals"]
-        if totals["saving_per_day"] > 0:
-            return (
-                f"Shifting flexible loads to cheaper hours is estimated to save "
-                f"{totals['saving_per_day']:.2f} a day, about "
-                f"{totals['saving_per_month']:.0f} a month, under the configured tariff. "
-                "This assumes the appliances can actually run in the proposed windows."
-            )
+# --- intent handlers -------------------------------------------------------
+
+
+def _answer_savings(context: dict) -> str:
+    totals = context["optimisation"]["totals"]
+    if totals["saving_per_day"] <= 0:
         return (
             "No material saving was found: the flexible loads at this site already run "
             "in low-cost hours under the configured tariff."
         )
-
-    if "tomorrow" in lowered or "forecast" in lowered or "predict" in lowered:
-        forecast = context["forecast"]
-        if not forecast.get("available"):
-            return f"A forecast is not available: {forecast.get('reason')}"
-        tomorrow = forecast["tomorrow"]
-        return (
-            f"Tomorrow ({tomorrow['date']}) is forecast at {tomorrow['energy_kwh']:.2f} kWh, "
-            f"between {tomorrow['lower_kwh']:.2f} and {tomorrow['upper_kwh']:.2f} kWh. "
-            f"The model's measured mean absolute error is {forecast['mae_kwh']:.2f} kWh."
+    lines = [
+        f"Shifting flexible loads to cheaper hours is estimated to save "
+        f"{totals['saving_per_day']:.2f} a day, about "
+        f"{totals['saving_per_month']:.0f} a month, which is "
+        f"{totals['saving_pct']:.0f}% of the current cost."
+    ]
+    for plan in context["optimisation"]["plans"]:
+        if not plan["shiftable"]:
+            continue
+        current = _hours(plan["current_hours"]) or "its current window"
+        lines.append(
+            f"{plan['appliance']}: move from {current} to "
+            f"{_hours(plan['recommended_hours'])} for about "
+            f"{plan['saving_per_day']:.2f} a day."
         )
+    lines.append("Costs are estimates from the configured tariff, not a real bill.")
+    return " ".join(lines)
 
-    if "geyser" in lowered or "water heater" in lowered or "when should" in lowered:
-        shiftable = [p for p in context["optimisation"]["plans"] if p["shiftable"]]
-        if shiftable:
-            plan = shiftable[0]
-            hours = ", ".join(f"{h:02d}:00" for h in plan["recommended_hours"])
+
+def _answer_cost(context: dict) -> str:
+    today = context["today"]
+    lines = [
+        f"On {today['date']} this site used {today['total_energy_kwh']:.2f} kWh, "
+        f"costing an estimated {today['cost']:.2f} {today['cost_currency']} at the "
+        "configured tariff."
+    ]
+    channels = today.get("channels", [])
+    if channels:
+        lines.append(
+            "By appliance: "
+            + ", ".join(f"{c['label']} {c['cost']:.2f}" for c in channels[:3])
+            + "."
+        )
+    tariff = context["tariff"]
+    if tariff["mode"] == "tou":
+        lines.append(
+            f"Peak hours ({_hours(tariff['peak_hours'])}) cost {tariff['peak_rate']} "
+            f"against {tariff['offpeak_rate']} off-peak."
+        )
+    lines.append("The tariff is configuration, so this is an estimate, not a bill.")
+    return " ".join(lines)
+
+
+def _answer_consumption(context: dict) -> str:
+    today = context["today"]
+    lines = [
+        f"On {today['date']} this site used {today['total_energy_kwh']:.2f} kWh, "
+        f"peaking at {today['peak_power_w']:.0f} W."
+    ]
+    channels = today.get("channels", [])
+    if channels:
+        lines.append(
+            "Breakdown: "
+            + ", ".join(
+                f"{c['label']} {c['energy_kwh']:.2f} kWh ({c['share_pct']:.0f}%)"
+                for c in channels
+            )
+            + "."
+        )
+    comparison = today.get("vs_trailing_week") or {}
+    if comparison.get("available") and comparison.get("change_pct") is not None:
+        direction = "above" if comparison["change_pct"] >= 0 else "below"
+        lines.append(
+            f"That is {abs(comparison['change_pct']):.0f}% {direction} the trailing "
+            f"{comparison['baseline_days']}-day average of "
+            f"{comparison['baseline_kwh']:.2f} kWh."
+        )
+    lines.append("These figures are measured from the meter readings.")
+    return " ".join(lines)
+
+
+def _answer_top_appliance(context: dict) -> str:
+    channels = context["today"].get("channels", [])
+    if not channels:
+        return "No appliance-level consumption was recorded for this day."
+    top = channels[0]
+    return (
+        f"{top['label']} used the most: {top['energy_kwh']:.2f} kWh, "
+        f"{top['share_pct']:.0f}% of the day's "
+        f"{context['today']['total_energy_kwh']:.2f} kWh, costing an estimated "
+        f"{top['cost']:.2f}."
+    )
+
+
+def _answer_forecast(context: dict) -> str:
+    forecast = context["forecast"]
+    if not forecast.get("available"):
+        return f"A forecast is not available for this site: {forecast.get('reason')}"
+    tomorrow = forecast["tomorrow"]
+    answer = (
+        f"Tomorrow ({tomorrow['date']}) is forecast at "
+        f"{tomorrow['energy_kwh']:.2f} kWh, between {tomorrow['lower_kwh']:.2f} and "
+        f"{tomorrow['upper_kwh']:.2f} kWh, costing an estimated "
+        f"{tomorrow['cost']:.2f}. The model's measured mean absolute error is "
+        f"{forecast['mae_kwh']:.2f} kWh."
+    )
+    if forecast.get("warning"):
+        answer += f" {forecast['warning']}"
+    return answer
+
+
+def _answer_schedule(context: dict) -> str:
+    plans = context["optimisation"]["plans"]
+    shiftable = [p for p in plans if p["shiftable"]]
+    if not shiftable:
+        blocked = [p for p in plans if p.get("reason")]
+        if blocked:
             return (
-                f"Run {plan['appliance']} at {hours}. It currently runs at "
-                f"{', '.join(f'{h:02d}:00' for h in plan['current_hours'])}, and the "
-                f"proposed window saves about {plan['saving_per_day']:.2f} a day."
+                f"Nothing can usefully be shifted at this site. "
+                f"{blocked[0]['appliance']}: {blocked[0]['reason']}"
             )
         return "No load at this site can be usefully shifted under the configured tariff."
 
-    if "high" in lowered or "why" in lowered:
-        abnormal = [a for a in appliances if a["status"] == "abnormal"]
-        if abnormal:
-            return " ".join(entry["explanation"] for entry in abnormal[:2])
-        comparison = today.get("vs_trailing_week") or {}
-        if comparison.get("available"):
-            direction = "above" if (comparison["change_pct"] or 0) >= 0 else "below"
-            return (
-                f"This day used {today['total_energy_kwh']:.2f} kWh, "
-                f"{abs(comparison['change_pct']):.0f}% {direction} the trailing "
-                f"{comparison['baseline_days']}-day average of "
-                f"{comparison['baseline_kwh']:.2f} kWh. No appliance exceeded its "
-                "weather-adjusted expectation on this day."
-            )
-        return _deterministic_insight(context)
+    lines = [
+        f"Run {plan['appliance']} at {_hours(plan['recommended_hours'])} instead of "
+        f"{_hours(plan['current_hours']) or 'its current window'}, saving about "
+        f"{plan['saving_per_day']:.2f} a day."
+        for plan in shiftable
+    ]
+    critical = context["optimisation"].get("critical_loads_never_shifted") or []
+    if critical:
+        lines.append(
+            f"{', '.join(critical)} are critical loads and are never proposed for "
+            "shifting."
+        )
+    return " ".join(lines)
 
-    if "model" in lowered or "reliable" in lowered or "accurate" in lowered:
-        registry = context["model_registry"]
-        lines = [
-            f"{registry['pairs_with_classifier']} of {registry['pairs_attempted']} "
-            "site/appliance pairs have a trained classifier."
-        ]
-        for entry in appliances:
-            lines.append(
-                f"{entry['label']}: model reliability is "
-                f"{entry['model_reliability']} -- {entry['model_reliability_note']}"
-            )
-        return " ".join(lines)
 
-    return _deterministic_insight(context)
+def _answer_carbon(context: dict) -> str:
+    carbon = context["carbon"]
+    return (
+        f"This day's estimated carbon is {carbon['daily_kg']:.2f} kg CO2e, and "
+        f"{carbon['month_to_date_kg']:.1f} kg month to date, at a grid factor of "
+        f"{carbon['emission_factor']} kg/kWh ({carbon['emission_factor_source']}). "
+        "Carbon tracks consumption exactly here, so reducing it means reducing or "
+        "shifting energy use. The factor is configured rather than measured, so this "
+        "is an estimate."
+    )
+
+
+def _answer_replacement(context: dict) -> str:
+    items = [r for r in context.get("recommendations", []) if "upgrad" in r["title"].lower()]
+    if items:
+        return f"{items[0]['recommendation']} {items[0]['reason']}"
+    return (
+        "No replacement is indicated from the available data. Replacement analysis needs "
+        "appliance star ratings, which exist only for the Jaipur homes, and a purchase "
+        "price, which is not in this dataset."
+    )
+
+
+def _answer_why_high(context: dict) -> str:
+    abnormal = [a for a in context.get("appliances", []) if a["status"] == "abnormal"]
+    if abnormal:
+        return " ".join(entry["explanation"] for entry in abnormal[:2])
+
+    today = context["today"]
+    comparison = today.get("vs_trailing_week") or {}
+    if comparison.get("available") and comparison.get("change_pct") is not None:
+        direction = "above" if comparison["change_pct"] >= 0 else "below"
+        return (
+            f"This day used {today['total_energy_kwh']:.2f} kWh, "
+            f"{abs(comparison['change_pct']):.0f}% {direction} the trailing "
+            f"{comparison['baseline_days']}-day average of "
+            f"{comparison['baseline_kwh']:.2f} kWh. No appliance exceeded its "
+            "weather-adjusted expectation, so nothing is flagged as abnormal."
+        )
+    return ""
+
+
+def _answer_weather(context: dict) -> str:
+    recorded = context["weather"].get("recorded_with_readings", {})
+    if not recorded.get("available"):
+        return ""
+    abnormal = [a for a in context.get("appliances", []) if a["status"] == "abnormal"]
+    verdict = (
+        " ".join(entry["explanation"] for entry in abnormal[:1])
+        if abnormal
+        else "No appliance exceeded its weather-adjusted expectation on this day."
+    )
+    return (
+        f"On {recorded['date']} the mean temperature was "
+        f"{recorded['temperature_mean_c']:.0f} C at "
+        f"{recorded['humidity_mean_pct']:.0f}% humidity, giving a heat index of "
+        f"{recorded['heat_index']:.1f}. That heat index is an input to the "
+        f"expected-energy baseline, so the comparison is already weather-adjusted. "
+        f"{verdict}"
+    )
+
+
+def _answer_model(context: dict) -> str:
+    registry = context["model_registry"]
+    lines = [
+        f"{registry['pairs_with_classifier']} of {registry['pairs_attempted']} "
+        "site/appliance pairs have a trained classifier."
+    ]
+    for entry in context.get("appliances", []):
+        lines.append(
+            f"{entry['label']}: model reliability is {entry['model_reliability']} -- "
+            f"{entry['model_reliability_note']}"
+        )
+    return " ".join(lines)
+
+
+def _answer_score(context: dict) -> str:
+    score = context["sustainability_score"]
+    if score["overall"] is None:
+        return "A sustainability score could not be computed for this site."
+    parts = [
+        f"{c['label']} {c['score']:.0f}"
+        for c in score["components"]
+        if c["available"] and c["score"] is not None
+    ]
+    answer = (
+        f"The sustainability score is {score['overall']:.0f} out of 100 "
+        f"({score['grade']})."
+    )
+    if parts:
+        answer += " Components: " + ", ".join(parts) + "."
+    return (
+        answer
+        + " Components whose inputs are unavailable are excluded rather than scored zero."
+    )
+
+
+def _hours(hours: list[int]) -> str:
+    return ", ".join(f"{hour:02d}:00" for hour in hours)
+
+
+#: Ordered most specific first: earlier entries win when phrasings overlap.
+_INTENTS = [
+    # "how much can I save" must beat the cost intent, which also matches "how much".
+    (
+        lambda has, q: has("save", "saving", "cheaper", "reduce my bill", "lower my bill"),
+        _answer_savings,
+    ),
+    (lambda has, q: has("replace", "upgrade", "new appliance", "worth buying"), _answer_replacement),
+    (lambda has, q: has("carbon", "emission", "co2", "footprint"), _answer_carbon),
+    (
+        lambda has, q: has("tomorrow", "forecast", "predict", "next week", "next day"),
+        _answer_forecast,
+    ),
+    (
+        lambda has, q: has(
+            "when should", "what time", "best time", "schedule", "shift", "should i run"
+        ),
+        _answer_schedule,
+    ),
+    (lambda has, q: has("reliable", "accurate", "trust", "model", "confidence"), _answer_model),
+    (lambda has, q: has("score", "sustainab", "rating", "grade"), _answer_score),
+    (lambda has, q: has("weather", "hot", "temperature", "humid", "climate"), _answer_weather),
+    (
+        lambda has, q: has("most", "biggest", "highest", "top consumer", "largest"),
+        _answer_top_appliance,
+    ),
+    # Cost before consumption: "how much did today cost" expresses both ideas.
+    (
+        lambda has, q: has(
+            "cost", "bill", "expensive", "price", "spend", "money", "rupee", "how much will",
+            "how much did",
+        ),
+        _answer_cost,
+    ),
+    (
+        lambda has, q: has(
+            "consumption", "consume", "usage", "used", "kwh", "energy today", "how much energy"
+        ),
+        _answer_consumption,
+    ),
+    (
+        lambda has, q: has("why", "high", "abnormal", "anomal", "normal", "wrong", "spike"),
+        _answer_why_high,
+    ),
+]

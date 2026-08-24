@@ -343,29 +343,29 @@ def test_assistant_reports_llm_status_honestly():
 
 
 def test_llm_model_defaults_per_provider():
-    from backend.config import Settings
+    # Assert against the constant, not a literal: the Gemini default has already had to
+    # move once when Google retired a model, and the behaviour under test is the
+    # fallback, not any particular model name.
+    from backend.config import DEFAULT_LLM_MODELS, Settings
 
-    assert Settings(llm_provider="gemini", llm_api_key="x").resolved_llm_model == (
-        "gemini-2.5-flash"
-    )
-    assert Settings(llm_provider="anthropic", llm_api_key="x").resolved_llm_model == (
-        "claude-opus-5"
-    )
+    for provider in ("gemini", "anthropic"):
+        settings = Settings(llm_provider=provider, llm_api_key="x")
+        assert settings.resolved_llm_model == DEFAULT_LLM_MODELS[provider]
 
 
 def test_llm_model_from_another_provider_is_ignored():
     """Switching provider without changing the model must not 404 at the provider."""
-    from backend.config import Settings
+    from backend.config import DEFAULT_LLM_MODELS, Settings
 
     mismatched = Settings(
         llm_provider="gemini", llm_model="claude-opus-5", llm_api_key="x"
     )
-    assert mismatched.resolved_llm_model == "gemini-2.5-flash"
+    assert mismatched.resolved_llm_model == DEFAULT_LLM_MODELS["gemini"]
 
     other_way = Settings(
-        llm_provider="anthropic", llm_model="gemini-2.5-flash", llm_api_key="x"
+        llm_provider="anthropic", llm_model="gemini-3.5-flash", llm_api_key="x"
     )
-    assert other_way.resolved_llm_model == "claude-opus-5"
+    assert other_way.resolved_llm_model == DEFAULT_LLM_MODELS["anthropic"]
 
 
 def test_explicit_model_for_the_matching_provider_is_respected():
@@ -418,3 +418,53 @@ def test_genuinely_invalid_settings_are_still_rejected():
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, llm_max_tokens="banana")
+
+
+# --- deterministic assistant routing ---------------------------------------
+
+
+def test_different_questions_get_different_answers():
+    """The fallback router must not return one generic summary for everything."""
+    from backend.services import ai_service, context_service
+
+    context = context_service.build_context(PRIMARY_SITE)
+    questions = [
+        "what about todays consumption",
+        "how much cost for todays electricity",
+        "which appliance consumes the most?",
+        "how much can I save?",
+        "what should I run tomorrow?",
+        "when should I use my water heater?",
+        "how can I reduce my carbon footprint?",
+        "how reliable is the model behind these numbers?",
+        "is today's usage normal for this weather?",
+        "what is my sustainability score?",
+    ]
+    answers = [
+        ai_service._deterministic_answer(PRIMARY_SITE, question, context)
+        for question in questions
+    ]
+    assert len(set(answers)) == len(questions), "some questions collided on one answer"
+    assert all(answer.strip() for answer in answers)
+
+
+def test_cost_and_savings_questions_are_not_confused():
+    """Both contain "how much"; only the extra word separates them."""
+    from backend.services import ai_service, context_service
+
+    context = context_service.build_context(PRIMARY_SITE)
+    cost = ai_service._deterministic_answer(
+        PRIMARY_SITE, "how much did today cost", context
+    )
+    savings = ai_service._deterministic_answer(PRIMARY_SITE, "how much can I save", context)
+    assert "costing an estimated" in cost
+    assert "save" in savings.lower()
+    assert cost != savings
+
+
+def test_gemini_default_model_is_not_the_retired_one():
+    """gemini-2.5-flash returns 404 for keys created now."""
+    from backend.config import DEFAULT_LLM_MODELS
+
+    assert DEFAULT_LLM_MODELS["gemini"] != "gemini-2.5-flash"
+    assert DEFAULT_LLM_MODELS["gemini"].startswith("gemini-")

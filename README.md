@@ -173,9 +173,19 @@ Everything that is policy rather than measurement lives in `.env` (see `.env.exa
 
 - **Weather** — Open-Meteo by default and needs **no key**. OpenWeather and WeatherAPI
   are supported with one. All calls are server-side; the key never reaches the browser.
-- **LLM** — optional. Anthropic (default, `claude-opus-5`), OpenAI or Gemini. Without
-  one, the assistant answers deterministically from the same grounded context and
-  everything else is unaffected.
+- **LLM** — optional. Anthropic (`claude-opus-5`), OpenAI, or Gemini. Without a key the
+  assistant answers deterministically from the same grounded context and everything else
+  is unaffected.
+  - **Free option:** a Gemini key from [AI Studio](https://aistudio.google.com/apikey)
+    with `LLM_PROVIDER=gemini`. Leave `LLM_MODEL` empty; a model belonging to another
+    provider is ignored rather than sent, so switching provider cannot 404.
+  - The free tier allows about **20 requests per day per model** — verified from the
+    quota metadata, not the docs, which do not state it. Daily insights are cached per
+    site and date so browsing does not consume it, but the chat assistant will exhaust
+    it quickly. The quota is per model, so a different Gemini model has its own
+    allowance.
+  - `gemini-2.5-flash` is retired for new keys and returns 404; the default is
+    `gemini-3.5-flash`.
 - **Tariff** — flat or time-of-use. Configuration, so every cost is an estimate.
 - **Carbon** — grid emission factor, with per-country overrides.
 - **Solar / battery / EV** — all off by default. Enabling them turns on interfaces and

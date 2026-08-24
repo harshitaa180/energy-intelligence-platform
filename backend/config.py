@@ -13,12 +13,16 @@ from functools import lru_cache
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-#: Model used when ``LLM_MODEL`` is unset. ``gemini-2.5-flash`` is on Google's free
+#: Model used when ``LLM_MODEL`` is unset. ``gemini-3.5-flash`` is on Google's free
 #: tier, which makes the assistant usable without a paid account.
+#:
+#: Not ``gemini-2.5-flash``: Google returns
+#: "This model is no longer available to new users" for it, so a key created today
+#: gets a 404. Verified by calling the API rather than by reading the model list.
 DEFAULT_LLM_MODELS: dict[str, str] = {
     "anthropic": "claude-opus-5",
     "openai": "gpt-4o-mini",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash",
 }
 
 #: Used to spot a model configured for a different provider than the one selected.
