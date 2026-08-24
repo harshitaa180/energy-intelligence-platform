@@ -1,0 +1,56 @@
+# Render Blueprint.
+#
+# Connect this repository at https://dashboard.render.com/blueprints and Render reads
+# this file to create the service -- no manual field entry.
+#
+# Sizing note: the app's measured steady-state working set is ~181 MB (Python and the
+# ML libraries account for ~150 MB of that; the 22,084 readings add ~10 MB), so it fits
+# the 512 MB free instance with room to spare.
+
+services:
+  - type: web
+    name: energy-intelligence-platform
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore # closest region to the sites in the dataset
+    branch: main
+
+    # Render replaces an instance only once this returns 2xx, so a broken build never
+    # takes down a working deploy.
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: APP_ENV
+        value: production
+
+      # Render injects PORT; the Dockerfile honours it and falls back to 7860.
+      - key: PORT
+        value: 10000
+
+      # Open-Meteo needs no API key, so live weather works out of the box.
+      - key: WEATHER_PROVIDER
+        value: open-meteo
+
+      # Optional. Set a value in the Render dashboard to enable conversational answers;
+      # without it the assistant falls back to deterministic, data-grounded replies and
+      # nothing else is affected.
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: anthropic
+
+      # Tariff and grid emission factor are configuration, not measurement. Every cost
+      # and carbon figure the app reports is labelled "estimated" because of this.
+      - key: DEFAULT_TARIFF_PER_KWH
+        value: "8"
+      - key: TARIFF_MODE
+        value: tou
+      - key: GRID_EMISSION_FACTOR
+        value: "0.71"
+
+      # The SQLite file holds only user-created state (preferences, assistant history)
+      # and lives on ephemeral disk, so it resets on redeploy. Readings and model
+      # artefacts are baked into the image and are unaffected.
+      - key: DATABASE_URL
+        value: sqlite:///./energy_platform.db
