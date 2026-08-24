@@ -1,0 +1,26 @@
+house_id,meter_id,appliance_type,appliance_id,brand,star_rating,appliance_count
+House_1,1,AC,AC1,Daikin,3,1
+House_1,1,AC,AC2,Blue Star,4,1
+House_1,1,AC,AC3,Panasonic,3,1
+House_1,1,AC,AC4,Voltas,3,1
+House_1,1,AC,AC5,Voltas,3,1
+House_1,1,AC,AC6,Hitachi,3,1
+House_1,1,Geyser,G1,Haier,4,1
+House_1,1,Geyser,G2,Indo,4,2
+House_1,1,Geyser,G4,Crompton,4,1
+House_1,1,Geyser,G5,Indo,NA,1
+,,,,,,
+House_2,2,AC,AC1,Mitsubishi,5,2
+House_2,2,AC,AC2,Lloyd,3,3
+House_2,2,Geyser,G1,Hindware,5,1
+House_2,2,Geyser,G2,Indo,4,2
+House_2,2,Geyser,G4,Hindware,NA,1
+,,,,,,
+House_4,4,AC,AC1,LG,NA,1
+House_4,4,AC,AC2,Panasonic,5,2
+House_4,4,AC,AC4,Panasonic,4,1
+House_4,4,AC,AC5,Samsung,3,1
+House_4,4,AC,AC6,Panasonic,4,1
+House_4,4,AC,AC7,Voltas,3,1
+House_4,4,Geyser,G1,Venus,NA,3
+House_4,4,Geyser,G4,Pearl,NA,1

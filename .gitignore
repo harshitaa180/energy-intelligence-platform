@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.db
+node_modules/
+dist/
+.vite/
+_t.py
+frontend/shots*/
+frontend/shoot*.mjs
+.pytest_cache/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
