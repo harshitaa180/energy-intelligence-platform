@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Model used when ``LLM_MODEL`` is unset. ``gemini-2.5-flash`` is on Google's free
@@ -103,6 +103,31 @@ class Settings(BaseSettings):
     #: Site the dashboard opens on. House_4 has the longest history (116 days) and
     #: the only classifier that validates well.
     demo_site_id: str = "House_4"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_non_text_means_default(cls, data):
+        """Treat a blank value in ``.env`` as "use the default" for non-text settings.
+
+        Writing ``LLM_MAX_TOKENS=`` with nothing after it is a natural thing to do when
+        you don't want to override something. Without this, the empty string reaches
+        pydantic as an int and the whole application refuses to start -- a
+        disproportionate failure for a blank line in a config file.
+
+        Text settings keep the empty string, because there it is a real value: an unset
+        API key, or an ``LLM_MODEL`` that means "use the provider's default".
+        """
+        if not isinstance(data, dict):
+            return data
+
+        kept = {}
+        for key, value in data.items():
+            field = cls.model_fields.get(str(key).lower())
+            blank = isinstance(value, str) and not value.strip()
+            if blank and field is not None and field.annotation is not str:
+                continue  # fall through to the field's default
+            kept[key] = value
+        return kept
 
     @property
     def cors_origin_list(self) -> list[str]:

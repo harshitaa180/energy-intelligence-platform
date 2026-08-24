@@ -383,3 +383,38 @@ def test_gemini_request_disables_thinking():
 
     source = inspect.getsource(ai_service._call_gemini)
     assert '"thinkingBudget": 0' in source
+
+
+def test_blank_non_text_settings_fall_back_to_defaults():
+    """A blank line in .env must not stop the application from starting."""
+    from backend.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        llm_max_tokens="",
+        llm_timeout_seconds="",
+        api_port="",
+        solar_enabled="",
+    )
+    assert settings.llm_max_tokens == 2000
+    assert settings.llm_timeout_seconds == 60.0
+    assert settings.api_port == 8000
+    assert settings.solar_enabled is False
+
+
+def test_blank_text_settings_stay_empty():
+    """For text settings the empty string is a real value, not a missing one."""
+    from backend.config import Settings
+
+    settings = Settings(_env_file=None, llm_api_key="", llm_model="")
+    assert settings.llm_api_key == ""
+    assert settings.llm_configured is False
+
+
+def test_genuinely_invalid_settings_are_still_rejected():
+    from pydantic import ValidationError
+
+    from backend.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, llm_max_tokens="banana")
