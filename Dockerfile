@@ -24,7 +24,10 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Hugging Face Spaces routes to 7860 unless told otherwise. Platforms that
+    # inject their own $PORT (Railway, Cloud Run) override this at runtime.
+    PORT=7860
 
 WORKDIR /app
 
@@ -44,12 +47,13 @@ COPY ml/ ./ml/
 
 COPY --from=frontend /build/dist ./frontend/dist
 
-# Run as a non-root user.
-RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
-USER appuser
+# Run as a non-root user. UID 1000 is what Hugging Face Spaces expects, and it is a
+# sensible default everywhere else.
+RUN useradd --create-home --uid 1000 user \
+    && chown -R user:user /app
+USER user
+ENV HOME=/home/user
 
-EXPOSE 8000
+EXPOSE 7860
 
-# Railway injects $PORT; the fallback keeps `docker run` working locally.
-CMD ["sh", "-c", "exec uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "exec uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers 1"]

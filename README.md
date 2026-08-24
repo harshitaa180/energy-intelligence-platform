@@ -1,3 +1,14 @@
+---
+title: Energy Intelligence Platform
+emoji: "⚡"
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Detects appliance inefficiency after allowing for weather, forecasts demand with a measured error band, and optimises load against a tariff.
+---
+
 # Energy Intelligence Platform
 
 An AI-powered smart energy management and renewable optimisation platform, built on
@@ -282,6 +293,36 @@ Smart meter → IoT → MQTT → real-time ingestion → the same intelligence l
   and is documented as a future extension rather than mocked.
 - **PostgreSQL**: all database access funnels through `backend/database/db.py` and uses
   no SQLite-only types.
+
+---
+
+## Deployment
+
+The app ships as **one container**: the React bundle is built in a Node stage and served
+by the same FastAPI process that serves the API. One origin, no CORS, one thing to keep
+in sync.
+
+```bash
+docker build -t energy-intelligence .
+docker run --rm -p 7860:7860 energy-intelligence   # http://localhost:7860
+```
+
+`$PORT` is honoured where a platform injects one, and defaults to 7860 otherwise. The
+image installs `libgomp1`, which xgboost needs and `python:3.11-slim` omits, and runs as
+a non-root user.
+
+The dependency footprint is roughly **434 MB** (xgboost 140, scipy 119, pandas 71, numpy
+58, scikit-learn 46), which is over the 250 MB serverless-function limit on Vercel and
+similar platforms. This needs a container host, not a serverless function.
+
+`railway.toml` is included for Railway and points the health check at `/api/health`, so a
+failing release never replaces a working one.
+
+**Ephemeral storage.** The SQLite database holds only user-created state — household
+preferences and assistant conversations — and lives on the container filesystem, so it
+resets on redeploy. Meter readings and model artefacts are baked into the image and are
+unaffected. Mount a volume at `/app` or point `DATABASE_URL` at Postgres to make that
+state durable.
 
 ---
 
