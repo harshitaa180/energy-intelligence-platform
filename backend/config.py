@@ -13,6 +13,20 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: Model used when ``LLM_MODEL`` is unset. ``gemini-2.5-flash`` is on Google's free
+#: tier, which makes the assistant usable without a paid account.
+DEFAULT_LLM_MODELS: dict[str, str] = {
+    "anthropic": "claude-opus-5",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-2.5-flash",
+}
+
+#: Used to spot a model configured for a different provider than the one selected.
+MODEL_PREFIXES: dict[str, str] = {
+    "anthropic": "claude",
+    "gemini": "gemini",
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -63,7 +77,8 @@ class Settings(BaseSettings):
     #: ``anthropic`` | ``openai`` | ``gemini`` | ``none``
     llm_provider: str = "anthropic"
     llm_api_key: str = ""
-    llm_model: str = "claude-opus-5"
+    #: Leave empty to take the provider's default from :data:`DEFAULT_LLM_MODELS`.
+    llm_model: str = ""
     llm_max_tokens: int = 2000
     llm_timeout_seconds: float = 60.0
 
@@ -117,6 +132,25 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         return bool(self.llm_provider != "none" and self.llm_api_key)
+
+    @property
+    def resolved_llm_model(self) -> str:
+        """The model to actually call.
+
+        Falls back to the provider's default when ``LLM_MODEL`` is unset, and ignores a
+        model that belongs to a different provider. Switching ``LLM_PROVIDER`` without
+        also changing ``LLM_MODEL`` is an easy mistake, and the result would otherwise
+        be a confusing 404 from the provider rather than a clear fallback.
+        """
+        provider = self.llm_provider.lower()
+        default = DEFAULT_LLM_MODELS.get(provider, "")
+        if not self.llm_model:
+            return default
+
+        prefix = MODEL_PREFIXES.get(provider)
+        if prefix and not self.llm_model.lower().startswith(prefix):
+            return default
+        return self.llm_model
 
 
 def _parse_hours(raw: str) -> set[int]:

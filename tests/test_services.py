@@ -337,3 +337,49 @@ def test_assistant_reports_llm_status_honestly():
     if not status["configured"]:
         assert status["reason"]
         assert status["model"] is None
+
+
+# --- LLM model resolution --------------------------------------------------
+
+
+def test_llm_model_defaults_per_provider():
+    from backend.config import Settings
+
+    assert Settings(llm_provider="gemini", llm_api_key="x").resolved_llm_model == (
+        "gemini-2.5-flash"
+    )
+    assert Settings(llm_provider="anthropic", llm_api_key="x").resolved_llm_model == (
+        "claude-opus-5"
+    )
+
+
+def test_llm_model_from_another_provider_is_ignored():
+    """Switching provider without changing the model must not 404 at the provider."""
+    from backend.config import Settings
+
+    mismatched = Settings(
+        llm_provider="gemini", llm_model="claude-opus-5", llm_api_key="x"
+    )
+    assert mismatched.resolved_llm_model == "gemini-2.5-flash"
+
+    other_way = Settings(
+        llm_provider="anthropic", llm_model="gemini-2.5-flash", llm_api_key="x"
+    )
+    assert other_way.resolved_llm_model == "claude-opus-5"
+
+
+def test_explicit_model_for_the_matching_provider_is_respected():
+    from backend.config import Settings
+
+    settings = Settings(llm_provider="gemini", llm_model="gemini-3.5-flash", llm_api_key="x")
+    assert settings.resolved_llm_model == "gemini-3.5-flash"
+
+
+def test_gemini_request_disables_thinking():
+    """Gemini 2.5+ draws thinking tokens from maxOutputTokens and can return empty text."""
+    import inspect
+
+    from backend.services import ai_service
+
+    source = inspect.getsource(ai_service._call_gemini)
+    assert '"thinkingBudget": 0' in source

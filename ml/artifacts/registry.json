@@ -1,6 +1,6 @@
 {
   "pipeline_version": "1.0.0",
-  "trained_at": "2026-08-24T18:00:14.165446+00:00",
+  "trained_at": "2026-08-24T21:08:09.237804+00:00",
   "pairs": [
     {
       "site_id": "House1_Delhi",
@@ -62,7 +62,7 @@
         },
         "reliability_warning": "Fewer than 3 positive days in the test window: F1 and ROC-AUC are not reliable here. Treat PR-AUC as indicative only."
       },
-      "trained_at": "2026-08-24T18:00:13.654147+00:00"
+      "trained_at": "2026-08-24T21:08:08.709256+00:00"
     },
     {
       "site_id": "House1_Delhi",
@@ -133,7 +133,7 @@
         },
         "reliability_warning": "Fewer than 3 positive days in the test window: F1 and ROC-AUC are not reliable here. Treat PR-AUC as indicative only."
       },
-      "trained_at": "2026-08-24T18:00:13.806494+00:00"
+      "trained_at": "2026-08-24T21:08:08.868677+00:00"
     },
     {
       "site_id": "House_2",
@@ -195,7 +195,7 @@
         },
         "reliability_warning": "Fewer than 3 positive days in the test window: F1 and ROC-AUC are not reliable here. Treat PR-AUC as indicative only."
       },
-      "trained_at": "2026-08-24T18:00:13.920811+00:00"
+      "trained_at": "2026-08-24T21:08:08.989675+00:00"
     },
     {
       "site_id": "House_4",
@@ -256,7 +256,7 @@
           "power_gradient": 0.05036606639623642
         }
       },
-      "trained_at": "2026-08-24T18:00:14.159359+00:00"
+      "trained_at": "2026-08-24T21:08:09.230804+00:00"
     }
   ]
 }

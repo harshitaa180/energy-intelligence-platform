@@ -83,7 +83,7 @@ def status() -> dict:
     return {
         "configured": settings.llm_configured,
         "provider": settings.llm_provider,
-        "model": settings.llm_model if settings.llm_configured else None,
+        "model": settings.resolved_llm_model if settings.llm_configured else None,
         "reason": (
             None
             if settings.llm_configured
@@ -141,7 +141,7 @@ def ask(site_id: str, question: str, date: str | None = None, history: list | No
         "question": question,
         "answer": answer,
         "source": f"llm:{settings.llm_provider}",
-        "model": settings.llm_model,
+        "model": settings.resolved_llm_model,
         "llm_available": True,
         "context_included": _context_keys(context),
         "grounding_note": (
@@ -237,7 +237,7 @@ def _call_anthropic(prompt: str, system: str, history: list | None) -> str:
     )
     try:
         response = client.messages.create(
-            model=settings.llm_model,
+            model=settings.resolved_llm_model,
             max_tokens=settings.llm_max_tokens,
             system=system,
             thinking={"type": "adaptive"},
@@ -264,7 +264,7 @@ def _call_anthropic(prompt: str, system: str, history: list | None) -> str:
 def _call_openai(prompt: str, system: str, history: list | None) -> str:
     settings = get_settings()
     payload = {
-        "model": settings.llm_model,
+        "model": settings.resolved_llm_model,
         "messages": [{"role": "system", "content": system}, *_messages(prompt, history)],
         "max_tokens": settings.llm_max_tokens,
     }
@@ -300,11 +300,18 @@ def _call_gemini(prompt: str, system: str, history: list | None) -> str:
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": contents,
-        "generationConfig": {"maxOutputTokens": settings.llm_max_tokens},
+        "generationConfig": {
+            "maxOutputTokens": settings.llm_max_tokens,
+            # Gemini 2.5+ models think by default and those tokens are drawn from
+            # maxOutputTokens, so a modest budget can be consumed entirely by
+            # thinking and return empty text. This task is rephrasing figures the
+            # platform already computed, not reasoning, so thinking is turned off.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.llm_model}:generateContent"
+        f"{settings.resolved_llm_model}:generateContent"
     )
     try:
         with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
