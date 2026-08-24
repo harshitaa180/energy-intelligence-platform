@@ -1,14 +1,3 @@
----
-title: Energy Intelligence Platform
-emoji: "⚡"
-colorFrom: green
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
-short_description: Detects appliance inefficiency after allowing for weather, forecasts demand with a measured error band, and optimises load against a tariff.
----
-
 # Energy Intelligence Platform
 
 An AI-powered smart energy management and renewable optimisation platform, built on
@@ -307,22 +296,43 @@ docker build -t energy-intelligence .
 docker run --rm -p 7860:7860 energy-intelligence   # http://localhost:7860
 ```
 
-`$PORT` is honoured where a platform injects one, and defaults to 7860 otherwise. The
+`$PORT` is honoured where a platform injects one and defaults to 7860 otherwise. The
 image installs `libgomp1`, which xgboost needs and `python:3.11-slim` omits, and runs as
 a non-root user.
 
-The dependency footprint is roughly **434 MB** (xgboost 140, scipy 119, pandas 71, numpy
-58, scikit-learn 46), which is over the 250 MB serverless-function limit on Vercel and
-similar platforms. This needs a container host, not a serverless function.
+### Sizing
 
-`railway.toml` is included for Railway and points the health check at `/api/health`, so a
-failing release never replaces a working one.
+| | |
+|---|---|
+| Installed dependencies | **~434 MB** (xgboost 140, scipy 119, pandas 71, numpy 58, scikit-learn 46) |
+| Measured working set at runtime | **~181 MB** (ML libraries ~150 MB, the 22,084 readings ~10 MB) |
 
-**Ephemeral storage.** The SQLite database holds only user-created state — household
-preferences and assistant conversations — and lives on the container filesystem, so it
-resets on redeploy. Meter readings and model artefacts are baked into the image and are
-unaffected. Mount a volume at `/app` or point `DATABASE_URL` at Postgres to make that
-state durable.
+The dependency footprint is what matters for *packaging*, and it is over the 250 MB
+serverless-function limit on Vercel and similar platforms — **this needs a container
+host, not a serverless function.** The working set is what matters for *sizing*, and
+181 MB fits comfortably on a 512 MB instance.
+
+### Platforms
+
+`render.yaml` and `railway.toml` are both included; each points its health check at
+`/api/health`, so a failing build never replaces a working deploy.
+
+- **Render** — free web-service tier (512 MB, 750 instance hours a month, Dockerfile
+  deploys, no card). Connect the repo at
+  [dashboard.render.com/blueprints](https://dashboard.render.com/blueprints) and the
+  blueprint configures the service. Free instances sleep after 15 minutes of inactivity
+  and take about a minute to wake.
+- **Railway** — `railway up` once a plan is active. The free trial has ended, so a plan
+  is required.
+- **Hugging Face Spaces** — *not* an option on the free tier: only static Spaces are
+  free, and Docker Spaces require PRO.
+
+### Ephemeral storage
+
+The SQLite database holds only user-created state — household preferences and assistant
+conversations — and lives on the container filesystem, so it resets on redeploy. Meter
+readings and model artefacts are baked into the image and are unaffected. Mount a volume
+at `/app`, or point `DATABASE_URL` at Postgres, to make that state durable.
 
 ---
 
